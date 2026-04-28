@@ -32,7 +32,7 @@ export function createApp(io) {
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
   app.use('/auth', authRoutes);
-  app.use('/whatsapp', requireAuth, whatsappRoutes);
+  app.use('/whatsapp', whatsappRoutes);
 
   app.use(requireAuth);
   app.use('/chat', chatRoutes);

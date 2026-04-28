@@ -29,13 +29,29 @@ const sendSchema = z.object({
 router.post('/messages/send', async (req, res, next) => {
   try {
     const body = sendSchema.parse(req.body);
+    const ownership = await query(
+      `select id from conversations where id = $1 and workspace_id = $2`,
+      [body.conversationId, req.user.workspaceId]
+    );
+
+    if (ownership.rowCount === 0) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
     const result = await query(
       `insert into messages (conversation_id, sender_type, content, channel)
        values ($1, 'agent', $2, $3)
        returning *`,
       [body.conversationId, body.content, body.channel]
     );
-    await query('update conversations set updated_at = now() where id = $1', [body.conversationId]);
+
+    await query(
+      `update conversations
+       set updated_at = now()
+       where id = $1 and workspace_id = $2`,
+      [body.conversationId, req.user.workspaceId]
+    );
+
     req.io.to(body.conversationId).emit('message:new', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (err) {

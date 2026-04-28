@@ -4,6 +4,7 @@ import { query } from '../../db/pool.js';
 import { generateAIReply } from '../../services/ai.service.js';
 
 const router = express.Router();
+const emptyEmbedding = `[${'0,'.repeat(1535)}0]`;
 
 const chatSchema = z.object({
   conversationId: z.string().uuid(),
@@ -15,11 +16,24 @@ const chatSchema = z.object({
 router.post('/chat', async (req, res, next) => {
   try {
     const body = chatSchema.parse(req.body);
+
+    const ownership = await query(
+      `select id from conversations where id = $1 and workspace_id = $2`,
+      [body.conversationId, req.user.workspaceId]
+    );
+
+    if (ownership.rowCount === 0) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
     const contextResult = await query(
-      `select sender_type, content from messages
-      where conversation_id = $1
-      order by created_at desc limit 12`,
-      [body.conversationId]
+      `select m.sender_type, m.content
+       from messages m
+       join conversations c on c.id = m.conversation_id
+       where m.conversation_id = $1 and c.workspace_id = $2
+       order by m.created_at desc
+       limit 12`,
+      [body.conversationId, req.user.workspaceId]
     );
 
     const context = contextResult.rows.reverse().map((m) => ({
@@ -36,8 +50,22 @@ router.post('/chat', async (req, res, next) => {
 
     const saved = await query(
       `insert into messages (conversation_id, sender_type, content, channel)
-       values ($1, 'ai', $2, 'website') returning *`,
-      [body.conversationId, reply]
+       select c.id, 'ai', $2, 'website'
+       from conversations c
+       where c.id = $1 and c.workspace_id = $3
+       returning *`,
+      [body.conversationId, reply, req.user.workspaceId]
+    );
+
+    if (saved.rowCount === 0) {
+      return res.status(404).json({ message: 'Conversation not found' });
+    }
+
+    await query(
+      `update conversations
+       set updated_at = now()
+       where id = $1 and workspace_id = $2`,
+      [body.conversationId, req.user.workspaceId]
     );
 
     req.io.to(body.conversationId).emit('message:new', saved.rows[0]);
@@ -58,8 +86,8 @@ router.post('/train', async (req, res, next) => {
 
     await query(
       `insert into embeddings (workspace_id, knowledge_base_id, chunk_text, embedding)
-      values ($1, $2, $3, $4)`,
-      [req.user.workspaceId, kb.rows[0].id, sourceContent.slice(0, 1500), JSON.stringify([])]
+      values ($1, $2, $3, $4::vector)`,
+      [req.user.workspaceId, kb.rows[0].id, sourceContent.slice(0, 1500), emptyEmbedding]
     );
 
     res.status(201).json(kb.rows[0]);
